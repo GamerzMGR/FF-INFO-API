@@ -1,0 +1,75 @@
+const express = require("express");
+const axios = require("axios");
+const crypto = require("crypto");
+require("dotenv").config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+app.use(require("cors")());
+
+// Store API keys (In-Memory for now)
+const apiKeys = new Map(); // { "key": { expiry, createdAt } }
+
+// ✅ Generate API Key (with expiry)
+app.post("/api/generate-key", (req, res) => {
+    const expiryMinutes = req.body.expiry || 60; // Default: 60 minutes
+    const newKey = crypto.randomBytes(16).toString("hex");
+    const expiryTime = Date.now() + expiryMinutes * 60 * 1000; // Set expiry
+
+    apiKeys.set(newKey, { expiry: expiryTime, createdAt: Date.now() });
+
+    res.json({ apiKey: newKey, expiresAt: new Date(expiryTime).toISOString() });
+});
+
+// ❌ Revoke API Key
+app.post("/api/revoke-key", (req, res) => {
+    const { key } = req.body;
+
+    if (!key || !apiKeys.has(key)) {
+        return res.status(404).json({ error: "API key not found" });
+    }
+
+    apiKeys.delete(key);
+    res.json({ message: "API key revoked successfully" });
+});
+
+// ✅ Validate API Key Middleware
+const validateKey = (req, res, next) => {
+    const key = req.query.key;
+
+    if (!key || !apiKeys.has(key)) {
+        return res.status(403).json({ error: "Invalid API key" });
+    }
+
+    const { expiry } = apiKeys.get(key);
+    if (Date.now() > expiry) {
+        apiKeys.delete(key); // Auto-delete expired keys
+        return res.status(403).json({ error: "API key expired" });
+    }
+
+    next();
+};
+
+// 📡 Proxy Route (Requires Valid API Key)
+app.get("/api/data", validateKey, async (req, res) => {
+    const { region, uid } = req.query;
+
+    if (!region || !uid) {
+        return res.status(400).json({ error: "Missing region or uid" });
+    }
+
+    try {
+        const originalApiUrl = `https://free-fire-data.vercel.app/api/data?region=${region}&uid=${uid}&key=${process.env.ORIGINAL_API_KEY}`;
+        const response = await axios.get(originalApiUrl);
+        res.json(response.data);
+    } catch (error) {
+        res.status(500).json({ error: "Failed to fetch data", details: error.message });
+    }
+});
+
+// 🏁 Start server (for local testing)
+app.listen(PORT, () => console.log(`API running on port ${PORT}`));
+
+module.exports = app; // For Vercel deployment
